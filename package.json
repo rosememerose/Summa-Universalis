@@ -1,0 +1,48 @@
+{
+  "name": "folio-notes",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Summa Universalis — a page-first notebook and spaced-repetition desktop app",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && electron .\"",
+    "build": "vite build",
+    "start": "electron .",
+    "package": "npm run build && electron-builder --win nsis"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "latest",
+    "vite": "latest",
+    "typescript": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "lucide-react": "latest",
+    "katex": "latest",
+    "electron-updater": "^6.8.9"
+  },
+  "devDependencies": {
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "@types/katex": "latest",
+    "concurrently": "latest",
+    "electron": "latest",
+    "electron-builder": "latest",
+    "wait-on": "latest"
+  },
+  "build": {
+    "appId": "com.folionotes.app",
+    "productName": "Summa Universalis",
+    "artifactName": "Summa-Universalis-Setup-${version}.${ext}",
+    "files": ["dist/**/*", "electron/**/*", "package.json"],
+    "directories": { "output": "release" },
+    "win": { "target": "nsis" },
+    "publish": [{ "provider": "github", "owner": "rosememerose", "repo": "Summa-Universalis" }],
+  "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Summa Universalis"
+    }
+  }
+}

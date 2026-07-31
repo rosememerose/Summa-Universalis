@@ -1,0 +1,45 @@
+name: Release Summa Universalis
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Install Electron runtime
+        run: node node_modules/electron/install.js
+
+      - name: Verify source
+        run: pnpm exec tsc --noEmit
+
+      - name: Build interface
+        run: pnpm exec vite build
+
+      - name: Build and publish Windows release
+        run: pnpm exec electron-builder --win nsis --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

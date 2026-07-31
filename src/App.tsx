@@ -1,0 +1,258 @@
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { Archive, BookOpen, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Clock3, Command, FilePlus2, Layers3, MoreHorizontal, Plus, Search, Shuffle, Tag, Trash2, X } from 'lucide-react';
+import katex from 'katex';
+import 'katex/dist/katex.min.css';
+import type { AppData, Card, Notebook, Problem, Rating, TrashItem, Work } from './types';
+import { isProblemDue, reviewProblem } from './fsrs';
+import { seed } from './seed';
+
+const uid = () => crypto.randomUUID();
+const cloneSeed = () => JSON.parse(JSON.stringify(seed)) as AppData;
+const TRASH_LIFETIME=7*24*60*60*1000;
+const migrateData = (value:AppData):AppData => {
+  const legacy=value as AppData&{works?:Work[];activeWorkId?:string};
+  const fallbackWork:Work={id:'work-imported',title:'My work',createdAt:new Date().toISOString()};
+  const works=legacy.works?.length?legacy.works:[fallbackWork];
+  const fallbackWorkId=works[0].id;
+  const notebooks=legacy.notebooks.map(notebook=>({...notebook,workId:notebook.workId??fallbackWorkId}));
+  const activeNotebook=notebooks.find(n=>n.id===legacy.activeNotebookId);
+  const trash=(legacy.trash??[]).filter(item=>Date.now()-new Date(item.deletedAt).getTime()<TRASH_LIFETIME).map(item=>{
+    if(item.kind==='work')return{...item,workbooks:item.workbooks.map(entry=>({...entry,notebook:{...entry.notebook,workId:entry.notebook.workId??item.work.id}}))};
+    if(item.kind==='notebook')return{...item,notebook:{...item.notebook,workId:item.notebook.workId??fallbackWorkId},pages:item.pages.map(page=>({...page}))};
+    if(item.kind==='page'||item.kind==='flash')return item.notebook?{...item,notebook:{...item.notebook,workId:item.notebook.workId??fallbackWorkId}}:item;
+    return item;
+  }) as TrashItem[];
+  return {...legacy,works,notebooks,activeWorkId:legacy.activeWorkId&&works.some(w=>w.id===legacy.activeWorkId)?legacy.activeWorkId:(activeNotebook?.workId??fallbackWorkId),trash,cards:legacy.cards.map(card=>({...card,problems:card.problems.map((problem,index)=>({...problem,title:problem.title??`Card ${index+1}`,due:problem.due??card.due??new Date().toISOString(),stability:problem.stability??card.stability??1,difficulty:problem.difficulty??card.difficulty??5,reps:problem.reps??0,lapses:problem.lapses??0,reviews:problem.reviews??[]}))}))};
+};
+
+function newCard(notebookId:string): Card {
+  const now = new Date().toISOString();
+  return { id:uid(), notebookId, title:'Untitled page', core:'', notes:'', problems:[], tags:[], createdAt:now, updatedAt:now, due:now, stability:1, difficulty:5, reps:0, lapses:0, reviews:[] };
+}
+
+export default function App() {
+  const [data,setData] = useState<AppData|null>(null);
+  const [mode,setMode] = useState<'write'|'queue'|'study'|'history'|'trash'>('write');
+  const [query,setQuery] = useState('');
+  const [tagFilter,setTagFilter] = useState('');
+  const [tagMenuOpen,setTagMenuOpen] = useState(false);
+  const [dragCardId,setDragCardId] = useState<string|null>(null);
+  const [globalQuery,setGlobalQuery] = useState('');
+  const [notebookMenu,setNotebookMenu] = useState<{id:string;x:number;y:number}|null>(null);
+  const [workMenu,setWorkMenu] = useState<{id:string;x:number;y:number}|null>(null);
+  const [renameDialog,setRenameDialog] = useState<{kind:'work'|'workbook';id:string;title:string}|null>(null);
+  const [saved,setSaved] = useState(true);
+  const [revealed,setRevealed] = useState(false);
+  const [studyIds,setStudyIds] = useState<string[]>([]);
+  const [studyIndex,setStudyIndex] = useState(0);
+  const [openProblemId,setOpenProblemId] = useState<string|null>(null);
+  const saveTimer = useRef<number | undefined>(undefined);
+
+  useEffect(()=>{ (async()=>{ const stored = await window.folio?.load(); const browserStored = !window.folio ? localStorage.getItem('folio-data') : null; const loaded=stored ? stored as AppData : browserStored ? JSON.parse(browserStored) : cloneSeed(); setData(migrateData(loaded)); })(); },[]);
+  useEffect(()=>{ if(!data) return; setSaved(false); window.clearTimeout(saveTimer.current); saveTimer.current=window.setTimeout(async()=>{ if(window.folio) await window.folio.save(data); else localStorage.setItem('folio-data',JSON.stringify(data)); setSaved(true); },450); return()=>window.clearTimeout(saveTimer.current); },[data]);
+  useEffect(()=>{const timer=window.setInterval(()=>setData(d=>!d?d:{...d,trash:(d.trash??[]).filter(item=>Date.now()-new Date(item.deletedAt).getTime()<TRASH_LIFETIME)}),60000);return()=>window.clearInterval(timer)},[]);
+  const notebook = data?.notebooks.find(n=>n.id===data.activeNotebookId);
+  const visibleNotebooks = useMemo(()=>data?.notebooks.filter(n=>n.workId===data.activeWorkId)??[],[data]);
+  const notebookCards = useMemo(()=>data?.cards.filter(c=>c.notebookId===data.activeNotebookId) ?? [],[data]);
+  const filtered = useMemo(()=>notebookCards.filter(c=>(c.title+' '+c.notes+' '+c.tags.join(' ')).toLowerCase().includes(query.toLowerCase())&&(!tagFilter||c.tags.includes(tagFilter))),[notebookCards,query,tagFilter]);
+  const notebookTags=useMemo(()=>Array.from(new Set(notebookCards.flatMap(c=>c.tags))).sort(),[notebookCards]);
+  const active = data?.cards.find(c=>c.id===data.activeCardId);
+  const allProblems = useMemo(()=>data?.cards.flatMap(card=>card.problems.map(problem=>({card,problem})))??[],[data]);
+  const dueCount = allProblems.filter(x=>isProblemDue(x.problem)).length;
+  const currentStudy = allProblems.find(x=>x.problem.id===studyIds[studyIndex]);
+  const globalResults=useMemo(()=>{const q=globalQuery.trim().toLowerCase();if(!q)return[];return data?.cards.flatMap(card=>{const notebook=data.notebooks.find(n=>n.id===card.notebookId);const pageMatch=(card.title+' '+card.notes+' '+card.tags.join(' ')).toLowerCase().includes(q);const problemMatches=card.problems.filter(p=>((p.title??'')+' '+p.prompt+' '+p.solution).toLowerCase().includes(q));return [...(pageMatch?[{kind:'page' as const,card,notebook}]:[]),...problemMatches.map(problem=>({kind:'flash' as const,card,problem,notebook}))]})??[]},[data,globalQuery]);
+
+  if(!data) return <div className="loading">Opening your folio…</div>;
+
+  const patchCard=(patch:Partial<Card>)=>setData(d=>!d?d:{...d,cards:d.cards.map(c=>c.id===d.activeCardId?{...c,...patch,updatedAt:new Date().toISOString()}:c)});
+  const selectNotebook=(id:string)=>setData(d=>{ if(!d)return d; const selected=d.notebooks.find(n=>n.id===id);const first=d.cards.find(c=>c.notebookId===id); return {...d,activeWorkId:selected?.workId??d.activeWorkId,activeNotebookId:id,activeCardId:first?.id??''}; });
+  const addCard=()=>{ const card=newCard(data.activeNotebookId); setData({...data,cards:[...data.cards,card],activeCardId:card.id}); };
+  const addNotebook=()=>{ const n:Notebook={id:uid(),workId:data.activeWorkId,title:'New workbook',emoji:'◇',color:'#9a7653',createdAt:new Date().toISOString()}; setData({...data,notebooks:[...data.notebooks,n],activeNotebookId:n.id,activeCardId:''});setRenameDialog({kind:'workbook',id:n.id,title:n.title}) };
+  const addWork=()=>{const work:Work={id:uid(),title:'New work',createdAt:new Date().toISOString()};setData({...data,works:[...data.works,work],activeWorkId:work.id,activeNotebookId:'',activeCardId:''});setRenameDialog({kind:'work',id:work.id,title:work.title})};
+  const selectWork=(id:string)=>{const first=data.notebooks.find(n=>n.workId===id);const firstCard=data.cards.find(c=>c.notebookId===first?.id);setData({...data,activeWorkId:id,activeNotebookId:first?.id??'',activeCardId:firstCard?.id??''});setTagFilter('')};
+  const beginRenameNotebook=(id:string)=>{const current=data.notebooks.find(n=>n.id===id);if(!current)return;setRenameDialog({kind:'workbook',id,title:current.title});setNotebookMenu(null)};
+  const beginRenameWork=(work:Work)=>setRenameDialog({kind:'work',id:work.id,title:work.title});
+  const saveEntityName=()=>{if(!renameDialog)return;const title=renameDialog.title.trim();if(title)setData(d=>!d?d:renameDialog.kind==='work'?{...d,works:d.works.map(w=>w.id===renameDialog.id?{...w,title}:w)}:{...d,notebooks:d.notebooks.map(n=>n.id===renameDialog.id?{...n,title}:n)});setRenameDialog(null)};
+  const moveWorkbook=(notebookId:string,workId:string)=>{setData(d=>!d?d:{...d,notebooks:d.notebooks.map(n=>n.id===notebookId?{...n,workId}:n),activeWorkId:workId});setNotebookMenu(null)};
+  const deleteWork=(id:string)=>{const work=data.works.find(w=>w.id===id);if(!work)return;const workbooks=data.notebooks.filter(n=>n.workId===id);if(!window.confirm(`Move work “${work.title}” and its ${workbooks.length} ${workbooks.length===1?'workbook':'workbooks'} to Deleted?`))return;const item:TrashItem={id:uid(),kind:'work',deletedAt:new Date().toISOString(),work,workbooks:workbooks.map(notebook=>({notebook,pages:data.cards.filter(c=>c.notebookId===notebook.id)}))};const workbookIds=new Set(workbooks.map(n=>n.id));const works=data.works.filter(w=>w.id!==id);const notebooks=data.notebooks.filter(n=>!workbookIds.has(n.id));const cards=data.cards.filter(c=>!workbookIds.has(c.notebookId));const nextWork=works[0];const nextWorkbook=notebooks.find(n=>n.workId===nextWork?.id);setData({...data,works,notebooks,cards,trash:[...(data.trash??[]),item],activeWorkId:data.activeWorkId===id?(nextWork?.id??''):data.activeWorkId,activeNotebookId:data.activeWorkId===id?(nextWorkbook?.id??''):data.activeNotebookId,activeCardId:data.activeWorkId===id?(cards.find(c=>c.notebookId===nextWorkbook?.id)?.id??''):data.activeCardId});setWorkMenu(null)};
+  const deleteNotebook=(id:string)=>{const target=data.notebooks.find(n=>n.id===id);if(!target)return;const removed=data.cards.filter(c=>c.notebookId===id);const pageCount=removed.length;if(!window.confirm(`Move workbook “${target.title}” and its ${pageCount} ${pageCount===1?'page':'pages'} to Deleted?`))return;const trashItem:TrashItem={id:uid(),kind:'notebook',deletedAt:new Date().toISOString(),notebook:target,pages:removed};const notebooks=data.notebooks.filter(n=>n.id!==id);const cards=data.cards.filter(c=>c.notebookId!==id);const next=notebooks.find(n=>n.workId===target.workId);setData({...data,notebooks,cards,trash:[...(data.trash??[]),trashItem],activeNotebookId:data.activeNotebookId===id?(next?.id??''):data.activeNotebookId,activeCardId:data.activeNotebookId===id?(cards.find(c=>c.notebookId===next?.id)?.id??''):data.activeCardId});setNotebookMenu(null)};
+  const deletePage=(card:Card)=>{if(!window.confirm(`Move “${card.title}” and its ${card.problems.length} flash ${card.problems.length===1?'card':'cards'} to Recently Deleted?`))return;const remaining=data.cards.filter(c=>c.id!==card.id);const next=remaining.find(c=>c.notebookId===card.notebookId);const notebook=data.notebooks.find(n=>n.id===card.notebookId);const item:TrashItem={id:uid(),kind:'page',deletedAt:new Date().toISOString(),page:card,notebook};setData({...data,cards:remaining,trash:[...(data.trash??[]),item],activeCardId:data.activeCardId===card.id?(next?.id??''):data.activeCardId})};
+  const deleteFlash=(card:Card,problem:Problem)=>{const notebook=data.notebooks.find(n=>n.id===card.notebookId);const item:TrashItem={id:uid(),kind:'flash',deletedAt:new Date().toISOString(),flash:problem,pageId:card.id,pageTitle:card.title,notebookId:card.notebookId,notebook};setData(d=>!d?d:{...d,trash:[...(d.trash??[]),item],cards:d.cards.map(c=>c.id===card.id?{...c,problems:c.problems.filter(p=>p.id!==problem.id)}:c)})};
+  const move=(delta:number)=>{ const i=notebookCards.findIndex(c=>c.id===data.activeCardId); if(i<0)return; const next=notebookCards[(i+delta+notebookCards.length)%notebookCards.length]; setData({...data,activeCardId:next.id}); };
+  const reorderPage=(dragId:string,targetId:string)=>setData(d=>{if(!d||dragId===targetId)return d;const drag=d.cards.find(c=>c.id===dragId);const target=d.cards.find(c=>c.id===targetId);if(!drag||!target||drag.notebookId!==target.notebookId)return d;const ordered=d.cards.filter(c=>c.notebookId===drag.notebookId);const from=ordered.findIndex(c=>c.id===dragId);const to=ordered.findIndex(c=>c.id===targetId);const [moved]=ordered.splice(from,1);ordered.splice(to,0,moved);let index=0;return{...d,cards:d.cards.map(c=>c.notebookId===drag.notebookId?ordered[index++]:c)}});
+  const beginStudy=()=>{ const ids=allProblems.filter(x=>isProblemDue(x.problem)).map(x=>x.problem.id); setStudyIds(ids);setStudyIndex(0);setRevealed(false);setMode('study'); };
+  const rate=(rating:Rating)=>{ if(!currentStudy)return; const updated=reviewProblem(currentStudy.problem,rating); setData(d=>!d?d:{...d,cards:d.cards.map(c=>c.id===currentStudy.card.id?{...c,problems:c.problems.map(p=>p.id===updated.id?updated:p)}:c)}); setRevealed(false);setStudyIndex(i=>i+1); };
+
+  return <div className="shell">
+    <aside className="sidebar">
+      <div className="brand"><span>Summa Universalis</span><button><MoreHorizontal size={18}/></button></div>
+      <div className="search globalSearch"><Search size={16}/><input aria-label="Search everything" placeholder="" value={globalQuery} onChange={e=>setGlobalQuery(e.target.value)}/>{globalQuery&&<button onClick={()=>setGlobalQuery('')}><X size={13}/></button>}</div>
+      <nav className="mainnav">
+        <button className={mode==='write'?'active':''} onClick={()=>setMode('write')}><BookOpen size={17}/> Library</button>
+        <button className={mode==='queue'||mode==='study'?'active':''} onClick={()=>setMode('queue')}><Layers3 size={17}/> Queue <b>{dueCount}</b></button>
+        <button className={mode==='history'?'active':''} onClick={()=>setMode('history')}><CalendarDays size={17}/> History</button>
+        <button className={mode==='trash'?'active':''} onClick={()=>setMode('trash')}><Trash2 size={17}/> Deleted {(data.trash?.length??0)>0&&<b>{data.trash?.length}</b>}</button>
+      </nav>
+      <div className="sectionlabel worksLabel"><span>Works</span><button onClick={addWork}><Plus size={15}/></button></div>
+      <div className="works">{data.works.map(work=><button key={work.id} className={work.id===data.activeWorkId?'active':''} onClick={()=>{selectWork(work.id);setMode('write');setWorkMenu(null)}} onContextMenu={e=>{e.preventDefault();setWorkMenu({id:work.id,x:e.clientX,y:e.clientY})}} title="Right-click for options"><span>{work.title}</span><small>{data.notebooks.filter(n=>n.workId===work.id).length}</small></button>)}</div>
+      <div className="sectionlabel workbooksLabel"><span>Workbooks</span><button onClick={addNotebook}><Plus size={15}/></button></div>
+      <div className="notebooks workbooks">{visibleNotebooks.map(n=><button key={n.id} className={n.id===data.activeNotebookId?'active':''} onClick={()=>{selectNotebook(n.id);setMode('write');setNotebookMenu(null);setTagFilter('')}} onContextMenu={e=>{e.preventDefault();setNotebookMenu({id:n.id,x:e.clientX,y:e.clientY})}}><span>{n.title}</span><small>{data.cards.filter(c=>c.notebookId===n.id).length}</small></button>)}</div>
+      <div className="sidebarFoot"><div className="profile"><div>MK</div><span><strong>My workspace</strong><small>Local & private</small></span><MoreHorizontal size={17}/></div></div>
+    </aside>
+
+    {notebookMenu&&<><div className="contextDismiss" onMouseDown={()=>setNotebookMenu(null)}/><div className="notebookContext" style={{left:notebookMenu.x,top:notebookMenu.y}}><button onClick={()=>beginRenameNotebook(notebookMenu.id)}>Rename workbook</button><div className="contextLabel">Move to work</div>{data.works.map(work=><button key={work.id} onClick={()=>moveWorkbook(notebookMenu.id,work.id)}>{work.title}</button>)}<button className="danger" onClick={()=>deleteNotebook(notebookMenu.id)}>Delete workbook</button></div></>}
+    {workMenu&&<><div className="contextDismiss" onMouseDown={()=>setWorkMenu(null)}/><div className="notebookContext" style={{left:workMenu.x,top:workMenu.y}}><button onClick={()=>{const work=data.works.find(w=>w.id===workMenu.id);if(work)beginRenameWork(work);setWorkMenu(null)}}>Rename work</button><button className="danger" onClick={()=>deleteWork(workMenu.id)}>Delete work</button></div></>}
+    {renameDialog&&<div className="renameShade" onMouseDown={e=>{if(e.target===e.currentTarget)setRenameDialog(null)}}><form className="renameDialog" onSubmit={e=>{e.preventDefault();saveEntityName()}}><span>{renameDialog.kind==='work'?'NAME WORK':'NAME WORKBOOK'}</span><h2>{renameDialog.kind==='work'?'Give this work a title':'Give this workbook a title'}</h2><input autoFocus value={renameDialog.title} onChange={e=>setRenameDialog({...renameDialog,title:e.target.value})} onFocus={e=>e.currentTarget.select()}/><div><button type="button" onClick={()=>setRenameDialog(null)}>Cancel</button><button type="submit" disabled={!renameDialog.title.trim()}>Save name</button></div></form></div>}
+    {globalQuery&&<div className="globalResults"><div className="globalResultsHead"><span>Search results</span><b>{globalResults.length}</b></div>{globalResults.length?globalResults.slice(0,30).map((result,i)=><button key={(result.kind==='flash'?result.problem.id:result.card.id)+i} onClick={()=>{setData({...data,activeWorkId:result.notebook?.workId??data.activeWorkId,activeNotebookId:result.card.notebookId,activeCardId:result.card.id});if(result.kind==='flash')setOpenProblemId(result.problem.id);setGlobalQuery('');setMode('write')}}><i>{result.kind==='flash'?'◇':'▤'}</i><span><strong>{result.kind==='flash'?(result.problem.title||'Untitled flash card'):result.card.title}</strong><small>{result.notebook?.title} · {result.kind==='flash'?result.card.title:'Page'}</small></span></button>):<p>No notes or flash cards match that search.</p>}</div>}
+    {mode==='write' ? <>
+      <section className="cardrail">
+        <header><div><h2>{notebook?.title}</h2></div><button onClick={addCard}><FilePlus2 size={17}/></button></header>
+        <div className="filterWrap"><div className="filter"><Search size={15}/><input aria-label="Filter pages" placeholder="" value={query} onChange={e=>setQuery(e.target.value)}/><span>{filtered.length}</span></div><button className={'tagFilterButton '+(tagFilter?'selected':'')} onClick={()=>setTagMenuOpen(x=>!x)} title="Filter by tag"><Tag size={15}/></button>{tagMenuOpen&&<div className="tagFilterMenu"><button className={!tagFilter?'active':''} onClick={()=>{setTagFilter('');setTagMenuOpen(false)}}>All tags</button>{notebookTags.map(tag=><button key={tag} className={tagFilter===tag?'active':''} onClick={()=>{setTagFilter(tag);setTagMenuOpen(false)}}>#{tag}</button>)}</div>}</div>
+        <div className="railList">{filtered.map((c,i)=><button key={c.id} draggable className={(c.id===data.activeCardId?'active ':'')+(c.id===dragCardId?'dragging':'')} onDragStart={e=>{setDragCardId(c.id);e.dataTransfer.effectAllowed='move'}} onDragOver={e=>{e.preventDefault();e.dataTransfer.dropEffect='move'}} onDrop={e=>{e.preventDefault();if(dragCardId)reorderPage(dragCardId,c.id);setDragCardId(null)}} onDragEnd={()=>setDragCardId(null)} onClick={()=>setData({...data,activeCardId:c.id})} onContextMenu={e=>{e.preventDefault();deletePage(c)}} title="Drag to reorder · Right-click to delete"><small>{String(i+1).padStart(2,'0')}</small><h3>{c.title}</h3>{c.problems.some(p=>isProblemDue(p))&&<footer><b>Due</b></footer>}</button>)}</div>
+        <button className="newpage" onClick={addCard}><Plus size={17}/> New</button>
+      </section>
+      <main className="workspace">
+        <div className="topbar"><div className="crumb">{notebook?.title}<ChevronRight size={14}/><b>{active?.title||'New page'}</b></div><div className="topactions"><span className={'saveState '+(saved?'saved':'saving')} title={saved?'Saved':'Not yet saved'}>{saved?<Check size={18}/>:<X size={18}/>}</span><button onClick={()=>move(-1)}><ChevronLeft size={18}/></button><span>{Math.max(1,notebookCards.findIndex(c=>c.id===active?.id)+1)} / {notebookCards.length}</span><button onClick={()=>move(1)}><ChevronRight size={18}/></button><button title="Shuffle" onClick={()=>{const c=notebookCards[Math.floor(Math.random()*notebookCards.length)];if(c)setData({...data,activeCardId:c.id})}}><Shuffle size={17}/></button></div></div>
+        {active ? <CardEditor card={active} patch={patchCard} deleteFlash={deleteFlash} requestedProblemId={openProblemId} clearRequestedProblem={()=>setOpenProblemId(null)}/> : <Empty onAdd={addCard}/>} 
+      </main>
+    </> : mode==='queue' ? <StudyQueue cards={data.cards} notebooks={data.notebooks} beginStudy={beginStudy} openFlashCard={(card,problem)=>{const owner=data.notebooks.find(n=>n.id===card.notebookId);setData({...data,activeWorkId:owner?.workId??data.activeWorkId,activeNotebookId:card.notebookId,activeCardId:card.id});setOpenProblemId(problem.id);setMode('write')}} activateFlashCard={(card,problem)=>setData(d=>!d?d:{...d,cards:d.cards.map(c=>c.id===card.id?{...c,problems:c.problems.map(p=>p.id===problem.id?{...p,due:new Date().toISOString(),stability:1,difficulty:5,reps:0,lapses:0,reviews:[]}:p)}:c)})}/> : mode==='history' ? <ReviewHistory cards={data.cards} notebooks={data.notebooks}/> : mode==='trash' ? <RecentlyDeleted items={data.trash??[]} restore={item=>restoreTrashItem(item,data,setData)} remove={id=>setData({...data,trash:(data.trash??[]).filter(item=>item.id!==id)})}/> : <StudyView item={currentStudy} index={studyIndex} total={studyIds.length} revealed={revealed} setRevealed={setRevealed} rate={rate} exit={()=>setMode('queue')}/>} 
+  </div>;
+}
+
+function CardEditor({card,patch,deleteFlash,requestedProblemId,clearRequestedProblem}:{card:Card;patch:(p:Partial<Card>)=>void;deleteFlash:(card:Card,problem:Problem)=>void;requestedProblemId:string|null;clearRequestedProblem:()=>void}){
+  const [notesEditorOpen,setNotesEditorOpen]=useState(false);
+  const [problemsOpen,setProblemsOpen]=useState(false);
+  const [problemQuery,setProblemQuery]=useState('');
+  const [problemIndex,setProblemIndex]=useState(0);
+  const [problemEditorOpen,setProblemEditorOpen]=useState(true);
+  const [flipped,setFlipped]=useState(false);
+  const addProblem=()=>patch({problems:[...card.problems,{id:uid(),title:`Card ${card.problems.length+1}`,prompt:'',solution:'',due:new Date().toISOString(),stability:1,difficulty:5,reps:0,lapses:0,reviews:[]}]});
+  const patchProblem=(id:string,p:Record<string,string>)=>patch({problems:card.problems.map(x=>x.id===id?{...x,...p}:x)});
+  const matching=card.problems.filter(p=>((p.title??'')+' '+p.prompt+' '+p.solution).toLowerCase().includes(problemQuery.toLowerCase()));
+  const problem=matching[Math.min(problemIndex,Math.max(0,matching.length-1))];
+  const openProblems=()=>{setProblemQuery('');setProblemIndex(0);setProblemEditorOpen(card.problems.length===0);setFlipped(false);setProblemsOpen(true)};
+  useEffect(()=>{if(!requestedProblemId)return;const index=card.problems.findIndex(p=>p.id===requestedProblemId);if(index>=0){setProblemQuery('');setProblemIndex(index);setProblemEditorOpen(false);setFlipped(false);setProblemsOpen(true)}clearRequestedProblem()},[requestedProblemId,card.problems,clearRequestedProblem]);
+  return <div className="paperWrap"><article className="paper">
+    <div className="pageTitleRow"><input className="titleInput" value={card.title} onClick={()=>setNotesEditorOpen(true)} onFocus={()=>setNotesEditorOpen(true)} onChange={e=>patch({title:e.target.value})}/><button className="flashSquare" onClick={openProblems} title="Open flash cards" aria-label={`Open ${card.problems.length} flash cards`}><div className="problemStack"><i/><i/><b>{card.problems.length}</b></div></button></div>
+    <section className="notes">{notesEditorOpen&&<div className="noteEditorDrop"><div className="editorTags">{card.tags.map((t,i)=><button key={i}>#{t}<X size={12} onClick={()=>patch({tags:card.tags.filter((_,x)=>x!==i)})}/></button>)}<button className="addtag" onClick={()=>{const t=prompt('Tag name');if(t)patch({tags:[...card.tags,t.replace(/^#/,'')]})}}>+ tag</button></div><textarea spellCheck autoFocus placeholder={'Start writing…\n\nUse $x^2$ for inline math or $$\\int_0^1 x^2 dx$$ for display math.'} value={card.notes} onKeyDown={e=>continueList(e,card.notes,value=>patch({notes:value}))} onChange={e=>patch({notes:e.target.value})}/><button onClick={()=>setNotesEditorOpen(false)}><ChevronUp size={15}/> Collapse editor</button></div>}<div className={'latexPreview '+(!notesEditorOpen?'previewOnly':'')}><RichText text={card.notes}/></div></section>
+    <footer className="paperFoot"><div className="footerStats"><span>Updated {new Date(card.updatedAt).toLocaleDateString(undefined,{month:'short',day:'numeric'})}</span><span><Clock3 size={14}/> Next review {new Date(card.due).toLocaleDateString()}</span><span>Stability {card.stability.toFixed(1)}d</span><span>Difficulty {card.difficulty.toFixed(1)}</span></div></footer>
+  </article>{problemsOpen&&<div className="modalShade" onMouseDown={e=>{if(e.target===e.currentTarget)setProblemsOpen(false)}}><section className="problemModal">
+    <header><div><span>FLASH CARDS</span><h2>{card.title}</h2></div><button onClick={()=>setProblemsOpen(false)}><X size={20}/></button></header>
+    <div className="problemSearch"><Search size={17}/><input autoFocus placeholder="Search titles, questions, and answers…" value={problemQuery} onChange={e=>{setProblemQuery(e.target.value);setProblemIndex(0);setFlipped(false)}}/><span>{matching.length} found</span></div>
+    <div className="problemCanvas">{problem ? <><button className="flashTitle" onClick={()=>setProblemEditorOpen(x=>!x)}>{problem.title||'Untitled flash card'}<ChevronDown size={16}/></button>{problemEditorOpen&&<div className="flashEditor"><input className="flashTitleInput" placeholder="Flash card title" value={problem.title??''} onChange={e=>patchProblem(problem.id,{title:e.target.value})}/><label>QUESTION</label><textarea placeholder="Type the question or prompt… Use $...$ for LaTeX." value={problem.prompt} onKeyDown={e=>continueList(e,problem.prompt,value=>patchProblem(problem.id,{prompt:value}))} onChange={e=>patchProblem(problem.id,{prompt:e.target.value})}/><label>ANSWER</label><textarea placeholder="Add the solution or answer…" value={problem.solution} onKeyDown={e=>continueList(e,problem.solution,value=>patchProblem(problem.id,{solution:value}))} onChange={e=>patchProblem(problem.id,{solution:e.target.value})}/><button className="collapseFlashEditor" onClick={()=>setProblemEditorOpen(false)}><ChevronUp size={15}/> Collapse editor</button></div>}<button className={'renderedFlash '+(flipped?'isFlipped':'')} onClick={()=>setFlipped(x=>!x)}><RichText text={(flipped?problem.solution:problem.prompt)||(flipped?'Add an answer.':'Add a question or prompt.')}/><small>Click to {flipped?'see question':'reveal answer'}</small></button></> : <div className="noProblems"><h3>{problemQuery?'No matching flash cards':'No flash cards yet'}</h3><p>{problemQuery?'Try a different search.':'Create a card with a question and answer.'}</p>{!problemQuery&&<button onClick={()=>{addProblem();setProblemIndex(card.problems.length);setProblemEditorOpen(true)}}><Plus size={16}/> Add a flash card</button>}</div>}</div>
+    <footer><button className="deleteProblem" disabled={!problem} onClick={()=>{if(problem)deleteFlash(card,problem);setProblemIndex(i=>Math.max(0,i-1));setFlipped(false)}}><Trash2 size={16}/> Delete</button><div className="problemNav"><button disabled={problemIndex===0||!problem} onClick={()=>{setProblemIndex(i=>i-1);setProblemEditorOpen(false);setFlipped(false)}}><ChevronLeft size={18}/></button><span>{problem?problemIndex+1:0} / {matching.length}</span><button disabled={problemIndex>=matching.length-1||!problem} onClick={()=>{setProblemIndex(i=>i+1);setProblemEditorOpen(false);setFlipped(false)}}><ChevronRight size={18}/></button></div><button className="addProblem" onClick={()=>{setProblemQuery('');addProblem();setProblemIndex(card.problems.length);setProblemEditorOpen(true);setFlipped(false)}}><Plus size={16}/> New flash card</button></footer>
+  </section></div>}</div>;
+}
+
+function continueList(event:KeyboardEvent<HTMLTextAreaElement>,value:string,setValue:(value:string)=>void){
+  if(event.key!=='Enter'||event.shiftKey)return;
+  const target=event.currentTarget;
+  const start=target.selectionStart;
+  const end=target.selectionEnd;
+  const lineStart=value.lastIndexOf('\n',start-1)+1;
+  const line=value.slice(lineStart,start);
+  const match=line.match(/^(\s*)([-*]|(\d+)\.)\s(.*)$/);
+  if(!match)return;
+  event.preventDefault();
+  if(!match[4]){
+    const next=value.slice(0,lineStart)+value.slice(end);
+    setValue(next);
+    requestAnimationFrame(()=>target.setSelectionRange(lineStart,lineStart));
+    return;
+  }
+  const marker=match[3]?`${Number(match[3])+1}.`:'-';
+  const insertion=`\n${match[1]}${marker} `;
+  const next=value.slice(0,start)+insertion+value.slice(end);
+  setValue(next);
+  const cursor=start+insertion.length;
+  requestAnimationFrame(()=>target.setSelectionRange(cursor,cursor));
+}
+
+function RichText({text}:{text:string}){
+  const html=useMemo(()=>renderMath(text),[text]);
+  return <div className="richText" dangerouslySetInnerHTML={{__html:html}}/>;
+}
+
+function renderMath(text:string){
+  const escape=(value:string)=>value.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]!));
+  const pattern=/(\$\$[\s\S]+?\$\$|\$[^\n$]+?\$)/g;
+  const inline=(value:string)=>value.split(pattern).map(part=>{
+    const display=part.startsWith('$$')&&part.endsWith('$$');
+    const inline=!display&&part.startsWith('$')&&part.endsWith('$');
+    if(!display&&!inline)return escape(part).replace(/\n/g,'<br>');
+    try{return katex.renderToString(part.slice(display?2:1,display?-2:-1),{displayMode:display,throwOnError:false,strict:false,trust:false});}
+    catch{return escape(part)}
+  }).join('');
+  const lines=text.split('\n');
+  let html='';let listType:''|'ul'|'ol'='';
+  for(const line of lines){
+    const bullet=line.match(/^\s*[-*]\s+(.*)$/);
+    const numbered=line.match(/^\s*\d+\.\s+(.*)$/);
+    const type=bullet?'ul':numbered?'ol':'';
+    if(type){if(listType!==type){if(listType)html+=`</${listType}>`;html+=`<${type}>`;listType=type}html+=`<li>${inline((bullet||numbered)![1])}</li>`}
+    else{if(listType){html+=`</${listType}>`;listType=''}html+=line?`<div>${inline(line)}</div>`:'<br>'}
+  }
+  if(listType)html+=`</${listType}>`;
+  return html;
+}
+
+function Empty({onAdd}:{onAdd:()=>void}){return <div className="empty"><Archive size={34}/><h2>This notebook is ready</h2><p>Add its first page and capture one durable idea.</p><button onClick={onAdd}><Plus size={17}/> Create a page</button></div>}
+
+function StudyQueue({cards,notebooks,beginStudy,openFlashCard,activateFlashCard}:{cards:Card[];notebooks:Notebook[];beginStudy:()=>void;openFlashCard:(card:Card,problem:Problem)=>void;activateFlashCard:(card:Card,problem:Problem)=>void}){
+  const items=cards.flatMap(card=>card.problems.map(problem=>({card,problem})));
+  const active=items.filter(x=>isProblemDue(x.problem)).sort((a,b)=>new Date(a.problem.due??0).getTime()-new Date(b.problem.due??0).getTime());
+  const complete=items.filter(x=>!isProblemDue(x.problem)).sort((a,b)=>new Date(a.problem.due!).getTime()-new Date(b.problem.due!).getTime());
+  const notebookName=(id:string)=>notebooks.find(n=>n.id===id)?.title||'Notebook';
+  const dateLabel=(iso:string)=>new Date(iso).toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric',year:new Date(iso).getFullYear()!==new Date().getFullYear()?'numeric':undefined});
+  return <main className="queuePage"><header className="queueHeader"><div><h1>Queue</h1></div><button disabled={!active.length} onClick={beginStudy}><Layers3 size={17}/>{active.length?`Study ${active.length} active ${active.length===1?'card':'cards'}`:'Nothing due yet'}</button></header>
+    <div className="queueContent"><section className="queueSection"><div className="queueTitle"><div><i className="activeDot"/><h2>Active</h2><b>{active.length}</b></div></div>{active.length?<div className="queueGrid">{active.map(({card,problem})=><button className="queueCard activeQueueCard" key={problem.id} onClick={()=>openFlashCard(card,problem)}><div><span>{notebookName(card.notebookId)} · {card.title}</span><b>DUE NOW</b></div><h3>{problem.title||'Untitled flash card'}</h3><p>{problem.prompt||'No question added yet.'}</p><footer><span>{problem.reps??0} reviews</span><span>Difficulty {(problem.difficulty??5).toFixed(1)}</span></footer></button>)}</div>:<div className="queueEmpty compact"><span>✓</span><div><h3>You are caught up</h3></div></div>}</section>
+    <section className="queueSection completeSection"><div className="queueTitle"><div><i className="completeDot"/><h2>Complete</h2><b>{complete.length}</b></div></div>{complete.length?<div className="queueList">{complete.map(({card,problem})=><div className="completeCardRow" key={problem.id} role="button" tabIndex={0} onClick={()=>openFlashCard(card,problem)} onKeyDown={e=>{if(e.key==='Enter')openFlashCard(card,problem)}}><div className="completeCheck">✓</div><div className="completeInfo"><span>{notebookName(card.notebookId)} · {card.title}</span><h3>{problem.title||'Untitled flash card'}</h3></div><div className="memoryStats"><small>STABILITY</small><b>{(problem.stability??1).toFixed(1)} days</b></div><div className="nextReview"><small>ESTIMATED NEXT REVIEW</small><b><CalendarDays size={15}/>{dateLabel(problem.due!)}</b></div><button className="activateCard" onClick={e=>{e.stopPropagation();activateFlashCard(card,problem)}}>Activate</button></div>)}</div>:<div className="queueEmpty subtle"><Clock3 size={22}/><div><h3>No completed flash cards yet</h3></div></div>}</section></div>
+  </main>;
+}
+
+function ReviewHistory({cards,notebooks}:{cards:Card[];notebooks:Notebook[]}){
+  const entries=cards.flatMap(card=>card.problems.flatMap(problem=>(problem.reviews??[]).map(review=>({card,problem,review})))).sort((a,b)=>new Date(b.review.at).getTime()-new Date(a.review.at).getTime());
+  const names=['','Again','Hard','Good','Easy'];
+  const notebookName=(id:string)=>notebooks.find(n=>n.id===id)?.title||'Notebook';
+  return <main className="historyPage"><header><h1>History</h1></header><div className="historyContent">{entries.length?<><div className="historySummary"><div><b>{entries.length}</b><span>Total reviews</span></div><div><b>{new Set(entries.map(e=>e.problem.id)).size}</b><span>Cards studied</span></div><div><b>{entries.filter(e=>e.review.rating>=3).length}</b><span>Successful recalls</span></div></div><div className="historyList">{entries.map((entry,i)=><div className="historyRow" key={entry.problem.id+entry.review.at+i}><i className={'rating'+entry.review.rating}>{entry.review.rating}</i><div><h3>{entry.problem.title||'Untitled flash card'}</h3><span>{notebookName(entry.card.notebookId)} · {entry.card.title}</span></div><div><small>RESULT</small><b>{names[entry.review.rating]}</b></div><div><small>NEXT INTERVAL</small><b>{entry.review.scheduledDays} {entry.review.scheduledDays===1?'day':'days'}</b></div><time>{new Date(entry.review.at).toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}</time></div>)}</div></>:<div className="historyEmpty"><CalendarDays size={34}/><h2>No reviews yet</h2></div>}</div></main>;
+}
+
+function restoreTrashItem(item:TrashItem,data:AppData,setData:(data:AppData)=>void){
+  let works=[...data.works];
+  let notebooks=[...data.notebooks];
+  let cards=[...data.cards];
+  if(item.kind==='work'){
+    if(!works.some(w=>w.id===item.work.id))works.push(item.work);
+    for(const entry of item.workbooks){if(!notebooks.some(n=>n.id===entry.notebook.id))notebooks.push(entry.notebook);for(const page of entry.pages)if(!cards.some(c=>c.id===page.id))cards.push(page)}
+  }else if(item.kind==='notebook'){
+    if(!notebooks.some(n=>n.id===item.notebook.id))notebooks.push(item.notebook);
+    for(const page of item.pages)if(!cards.some(c=>c.id===page.id))cards.push(page);
+  }else if(item.kind==='page'){
+    const sourceNotebook=item.notebook;
+    if(sourceNotebook&&!notebooks.some(n=>n.id===sourceNotebook.id))notebooks.push(sourceNotebook);
+    if(!cards.some(c=>c.id===item.page.id))cards.push(item.page);
+  }else{
+    const sourceNotebook=item.notebook;
+    if(sourceNotebook&&!notebooks.some(n=>n.id===sourceNotebook.id))notebooks.push(sourceNotebook);
+    let page=cards.find(c=>c.id===item.pageId);
+    if(!page){
+      const now=new Date().toISOString();
+      page={id:item.pageId,notebookId:item.notebookId,title:item.pageTitle,core:'',notes:'',problems:[],tags:[],createdAt:now,updatedAt:now,due:now,stability:1,difficulty:5,reps:0,lapses:0,reviews:[]};
+      cards.push(page);
+    }
+    cards=cards.map(c=>c.id===page!.id&&!c.problems.some(p=>p.id===item.flash.id)?{...c,problems:[...c.problems,item.flash]}:c);
+  }
+  setData({...data,works,notebooks,cards,trash:(data.trash??[]).filter(x=>x.id!==item.id)});
+}
+
+function RecentlyDeleted({items,restore,remove}:{items:TrashItem[];restore:(item:TrashItem)=>void;remove:(id:string)=>void}){
+  const sorted=[...items].sort((a,b)=>new Date(b.deletedAt).getTime()-new Date(a.deletedAt).getTime());
+  const daysLeft=(item:TrashItem)=>Math.max(1,Math.ceil((TRASH_LIFETIME-(Date.now()-new Date(item.deletedAt).getTime()))/86400000));
+  return <main className="trashPage"><header><h1>Deleted</h1></header><div className="trashContent">{sorted.length?<div className="trashList">{sorted.map(item=><div className="trashRow" key={item.id}><div className="trashIcon">{item.kind==='work'?'▦':item.kind==='notebook'?'▣':item.kind==='page'?'▤':'◇'}</div><div><small>{item.kind==='work'?'WORK':item.kind==='notebook'?'WORKBOOK':item.kind==='page'?'PAGE':'FLASH CARD'}</small><h3>{item.kind==='work'?item.work.title:item.kind==='notebook'?item.notebook.title:item.kind==='page'?item.page.title:(item.flash.title||'Untitled flash card')}</h3><span>{item.kind==='work'?`${item.workbooks.length} ${item.workbooks.length===1?'workbook':'workbooks'}`:item.kind==='notebook'?`${item.pages.length} ${item.pages.length===1?'page':'pages'}`:item.kind==='page'?(item.notebook?.title||'Workbook'):`${item.notebook?.title||'Workbook'} · ${item.pageTitle}`}</span></div><time>Deletes in {daysLeft(item)} {daysLeft(item)===1?'day':'days'}</time><button onClick={()=>restore(item)}>Restore</button><button className="deleteForever" onClick={()=>{if(window.confirm('Delete this item permanently?'))remove(item.id)}}><Trash2 size={15}/></button></div>)}</div>:<div className="trashEmpty"><Trash2 size={34}/><h2>Deleted is empty</h2></div>}</div></main>;
+}
+
+function StudyView({item,index,total,revealed,setRevealed,rate,exit}:{item?:{card:Card;problem:Problem};index:number;total:number;revealed:boolean;setRevealed:(x:boolean)=>void;rate:(r:Rating)=>void;exit:()=>void}){
+  if(!item)return <main className="study complete"><div className="studyTop"><button onClick={exit}><ChevronLeft size={18}/> Back to queue</button></div><div className="completeCard"><div>✓</div><h1>Queue complete</h1><p>You reviewed {total} {total===1?'flash card':'flash cards'}. Their next reviews have been scheduled.</p><button onClick={exit}>View study queue</button></div></main>;
+  const {card,problem}=item;
+  return <main className="study"><div className="studyTop"><button onClick={exit}><ChevronLeft size={18}/> Leave study</button><div><span>{index+1} of {total}</span><i><b style={{width:`${((index+1)/Math.max(total,1))*100}%`}}/></i></div><button><Command size={16}/> Shortcuts</button></div><div className="studyStage"><div className={'studyCard '+(revealed?'revealed':'')}><div className="studyLabel"><span>FLASH CARD</span><small>{card.title}</small></div><h1>{problem.prompt||'Untitled flash card'}</h1>{revealed&&<div className="answer"><label>ANSWER</label><RichText text={problem.solution||'No answer has been added yet.'}/></div>}</div>{!revealed?<button className="reveal" onClick={()=>setRevealed(true)}>Reveal answer <small>Space</small></button>:<div className="ratings">{([1,2,3,4] as Rating[]).map((r,i)=><button key={r} onClick={()=>rate(r)}><b>{['Again','Hard','Good','Easy'][i]}</b><small>{['1 day','Soon','On time','Later'][i]}</small><kbd>{r}</kbd></button>)}</div>}</div></main>;
+}
