@@ -39,7 +39,14 @@ jobs:
       - name: Build interface
         run: pnpm exec vite build
 
-      - name: Build and publish Windows release
-        run: pnpm exec electron-builder --win nsis --publish always
+      - name: Build Windows release
+        run: pnpm exec electron-builder --win nsis --publish never
+
+      - name: Publish complete GitHub release
+        shell: pwsh
+        run: |
+          $installer = (Get-ChildItem release -Filter 'Summa-Universalis-Setup-*.exe' | Select-Object -First 1).FullName
+          $blockmap = (Get-ChildItem release -Filter 'Summa-Universalis-Setup-*.exe.blockmap' | Select-Object -First 1).FullName
+          gh release create "${{ github.ref_name }}" $installer $blockmap "release/latest.yml" --title "Summa Universalis ${{ github.ref_name }}" --generate-notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
