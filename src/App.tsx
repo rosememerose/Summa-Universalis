@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
-import { Archive, BookOpen, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Clock3, Command, FilePlus2, Layers3, MoreHorizontal, Plus, Search, Shuffle, Tag, Trash2, X } from 'lucide-react';
+import { Archive, BookOpen, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Clock3, Command, FilePlus2, Layers3, MoreHorizontal, Plus, Redo2, Search, Shuffle, Tag, Trash2, Undo2, X } from 'lucide-react';
 import katex from 'katex';
 import 'katex/dist/katex.min.css';
 import type { AppData, Card, Notebook, Problem, Rating, TrashItem, Work } from './types';
@@ -42,6 +42,11 @@ export default function App() {
   const [workMenu,setWorkMenu] = useState<{id:string;x:number;y:number}|null>(null);
   const [renameDialog,setRenameDialog] = useState<{kind:'work'|'workbook';id:string;title:string}|null>(null);
   const [saved,setSaved] = useState(true);
+  const [sidebarOpen,setSidebarOpen] = useState(true);
+  const [worksOpen,setWorksOpen] = useState(true);
+  const [workbooksOpen,setWorkbooksOpen] = useState(true);
+  const [undoStack,setUndoStack] = useState<Card[]>([]);
+  const [redoStack,setRedoStack] = useState<Card[]>([]);
   const [revealed,setRevealed] = useState(false);
   const [studyIds,setStudyIds] = useState<string[]>([]);
   const [studyIndex,setStudyIndex] = useState(0);
@@ -51,6 +56,7 @@ export default function App() {
   useEffect(()=>{ (async()=>{ const stored = await window.folio?.load(); const browserStored = !window.folio ? localStorage.getItem('folio-data') : null; const loaded=stored ? stored as AppData : browserStored ? JSON.parse(browserStored) : cloneSeed(); setData(migrateData(loaded)); })(); },[]);
   useEffect(()=>{ if(!data) return; setSaved(false); window.clearTimeout(saveTimer.current); saveTimer.current=window.setTimeout(async()=>{ if(window.folio) await window.folio.save(data); else localStorage.setItem('folio-data',JSON.stringify(data)); setSaved(true); },450); return()=>window.clearTimeout(saveTimer.current); },[data]);
   useEffect(()=>{const timer=window.setInterval(()=>setData(d=>!d?d:{...d,trash:(d.trash??[]).filter(item=>Date.now()-new Date(item.deletedAt).getTime()<TRASH_LIFETIME)}),60000);return()=>window.clearInterval(timer)},[]);
+  useEffect(()=>{setUndoStack([]);setRedoStack([])},[data?.activeCardId]);
   const notebook = data?.notebooks.find(n=>n.id===data.activeNotebookId);
   const visibleNotebooks = useMemo(()=>data?.notebooks.filter(n=>n.workId===data.activeWorkId)??[],[data]);
   const notebookCards = useMemo(()=>data?.cards.filter(c=>c.notebookId===data.activeNotebookId) ?? [],[data]);
@@ -64,7 +70,9 @@ export default function App() {
 
   if(!data) return <div className="loading">Opening your folio…</div>;
 
-  const patchCard=(patch:Partial<Card>)=>setData(d=>!d?d:{...d,cards:d.cards.map(c=>c.id===d.activeCardId?{...c,...patch,updatedAt:new Date().toISOString()}:c)});
+  const patchCard=(patch:Partial<Card>)=>{if(!active)return;setUndoStack(stack=>[...stack.slice(-99),structuredClone(active)]);setRedoStack([]);setData(d=>!d?d:{...d,cards:d.cards.map(c=>c.id===d.activeCardId?{...c,...patch,updatedAt:new Date().toISOString()}:c)})};
+  const undoPage=()=>{const previous=undoStack.at(-1);if(!previous||!active)return;setUndoStack(stack=>stack.slice(0,-1));setRedoStack(stack=>[...stack,structuredClone(active)]);setData(d=>!d?d:{...d,cards:d.cards.map(c=>c.id===previous.id?previous:c)})};
+  const redoPage=()=>{const next=redoStack.at(-1);if(!next||!active)return;setRedoStack(stack=>stack.slice(0,-1));setUndoStack(stack=>[...stack,structuredClone(active)]);setData(d=>!d?d:{...d,cards:d.cards.map(c=>c.id===next.id?next:c)})};
   const selectNotebook=(id:string)=>setData(d=>{ if(!d)return d; const selected=d.notebooks.find(n=>n.id===id);const first=d.cards.find(c=>c.notebookId===id); return {...d,activeWorkId:selected?.workId??d.activeWorkId,activeNotebookId:id,activeCardId:first?.id??''}; });
   const addCard=()=>{ const card=newCard(data.activeNotebookId); setData({...data,cards:[...data.cards,card],activeCardId:card.id}); };
   const addNotebook=()=>{ const n:Notebook={id:uid(),workId:data.activeWorkId,title:'New workbook',emoji:'◇',color:'#9a7653',createdAt:new Date().toISOString()}; setData({...data,notebooks:[...data.notebooks,n],activeNotebookId:n.id,activeCardId:''});setRenameDialog({kind:'workbook',id:n.id,title:n.title}) };
@@ -83,8 +91,8 @@ export default function App() {
   const beginStudy=()=>{ const ids=allProblems.filter(x=>isProblemDue(x.problem)).map(x=>x.problem.id); setStudyIds(ids);setStudyIndex(0);setRevealed(false);setMode('study'); };
   const rate=(rating:Rating)=>{ if(!currentStudy)return; const updated=reviewProblem(currentStudy.problem,rating); setData(d=>!d?d:{...d,cards:d.cards.map(c=>c.id===currentStudy.card.id?{...c,problems:c.problems.map(p=>p.id===updated.id?updated:p)}:c)}); setRevealed(false);setStudyIndex(i=>i+1); };
 
-  return <div className="shell">
-    <aside className="sidebar">
+  return <div className={'shell '+(!sidebarOpen?'sidebarCollapsed':'')}>
+    {sidebarOpen&&<aside className="sidebar">
       <div className="brand"><span>Summa Universalis</span><button><MoreHorizontal size={18}/></button></div>
       <div className="search globalSearch"><Search size={16}/><input aria-label="Search everything" placeholder="" value={globalQuery} onChange={e=>setGlobalQuery(e.target.value)}/>{globalQuery&&<button onClick={()=>setGlobalQuery('')}><X size={13}/></button>}</div>
       <nav className="mainnav">
@@ -93,12 +101,12 @@ export default function App() {
         <button className={mode==='history'?'active':''} onClick={()=>setMode('history')}><CalendarDays size={17}/> History</button>
         <button className={mode==='trash'?'active':''} onClick={()=>setMode('trash')}><Trash2 size={17}/> Deleted {(data.trash?.length??0)>0&&<b>{data.trash?.length}</b>}</button>
       </nav>
-      <div className="sectionlabel worksLabel"><span>Works</span><button onClick={addWork}><Plus size={15}/></button></div>
-      <div className="works">{data.works.map(work=><button key={work.id} className={work.id===data.activeWorkId?'active':''} onClick={()=>{selectWork(work.id);setMode('write');setWorkMenu(null)}} onContextMenu={e=>{e.preventDefault();setWorkMenu({id:work.id,x:e.clientX,y:e.clientY})}} title="Right-click for options"><span>{work.title}</span><small>{data.notebooks.filter(n=>n.workId===work.id).length}</small></button>)}</div>
-      <div className="sectionlabel workbooksLabel"><span>Workbooks</span><button onClick={addNotebook}><Plus size={15}/></button></div>
-      <div className="notebooks workbooks">{visibleNotebooks.map(n=><button key={n.id} className={n.id===data.activeNotebookId?'active':''} onClick={()=>{selectNotebook(n.id);setMode('write');setNotebookMenu(null);setTagFilter('')}} onContextMenu={e=>{e.preventDefault();setNotebookMenu({id:n.id,x:e.clientX,y:e.clientY})}}><span>{n.title}</span><small>{data.cards.filter(c=>c.notebookId===n.id).length}</small></button>)}</div>
+      <div className="sectionlabel worksLabel"><button className="sectionToggle" onClick={()=>setWorksOpen(x=>!x)} title={worksOpen?'Hide works':'Show works'}>{worksOpen?<ChevronDown size={14}/>:<ChevronRight size={14}/>}<span>Works</span></button><button onClick={addWork}><Plus size={15}/></button></div>
+      {worksOpen&&<div className="works">{data.works.map(work=><button key={work.id} className={work.id===data.activeWorkId?'active':''} onClick={()=>{selectWork(work.id);setMode('write');setWorkMenu(null)}} onContextMenu={e=>{e.preventDefault();setWorkMenu({id:work.id,x:e.clientX,y:e.clientY})}} title="Right-click for options"><span>{work.title}</span><small>{data.notebooks.filter(n=>n.workId===work.id).length}</small></button>)}</div>}
+      <div className="sectionlabel workbooksLabel"><button className="sectionToggle" onClick={()=>setWorkbooksOpen(x=>!x)} title={workbooksOpen?'Hide workbooks':'Show workbooks'}>{workbooksOpen?<ChevronDown size={14}/>:<ChevronRight size={14}/>}<span>Workbooks</span></button><button onClick={addNotebook}><Plus size={15}/></button></div>
+      {workbooksOpen&&<div className="notebooks workbooks">{visibleNotebooks.map(n=><button key={n.id} className={n.id===data.activeNotebookId?'active':''} onClick={()=>{selectNotebook(n.id);setMode('write');setNotebookMenu(null);setTagFilter('')}} onContextMenu={e=>{e.preventDefault();setNotebookMenu({id:n.id,x:e.clientX,y:e.clientY})}}><span>{n.title}</span><small>{data.cards.filter(c=>c.notebookId===n.id).length}</small></button>)}</div>}
       <div className="sidebarFoot"><div className="profile"><div>MK</div><span><strong>My workspace</strong><small>Local & private</small></span><MoreHorizontal size={17}/></div></div>
-    </aside>
+    </aside>}
 
     {notebookMenu&&<><div className="contextDismiss" onMouseDown={()=>setNotebookMenu(null)}/><div className="notebookContext" style={{left:notebookMenu.x,top:notebookMenu.y}}><button onClick={()=>beginRenameNotebook(notebookMenu.id)}>Rename workbook</button><div className="contextLabel">Move to work</div>{data.works.map(work=><button key={work.id} onClick={()=>moveWorkbook(notebookMenu.id,work.id)}>{work.title}</button>)}<button className="danger" onClick={()=>deleteNotebook(notebookMenu.id)}>Delete workbook</button></div></>}
     {workMenu&&<><div className="contextDismiss" onMouseDown={()=>setWorkMenu(null)}/><div className="notebookContext" style={{left:workMenu.x,top:workMenu.y}}><button onClick={()=>{const work=data.works.find(w=>w.id===workMenu.id);if(work)beginRenameWork(work);setWorkMenu(null)}}>Rename work</button><button className="danger" onClick={()=>deleteWork(workMenu.id)}>Delete work</button></div></>}
@@ -112,7 +120,7 @@ export default function App() {
         <button className="newpage" onClick={addCard}><Plus size={17}/> New</button>
       </section>
       <main className="workspace">
-        <div className="topbar"><div className="crumb">{notebook?.title}<ChevronRight size={14}/><b>{active?.title||'New page'}</b></div><div className="topactions"><span className={'saveState '+(saved?'saved':'saving')} title={saved?'Saved':'Not yet saved'}>{saved?<Check size={18}/>:<X size={18}/>}</span><button onClick={()=>move(-1)}><ChevronLeft size={18}/></button><span>{Math.max(1,notebookCards.findIndex(c=>c.id===active?.id)+1)} / {notebookCards.length}</span><button onClick={()=>move(1)}><ChevronRight size={18}/></button><button title="Shuffle" onClick={()=>{const c=notebookCards[Math.floor(Math.random()*notebookCards.length)];if(c)setData({...data,activeCardId:c.id})}}><Shuffle size={17}/></button></div></div>
+        <div className="topbar"><div className="crumb">{notebook?.title}<button className="sidebarToggle" onClick={()=>setSidebarOpen(x=>!x)} title={sidebarOpen?'Hide navigation':'Show navigation'} aria-label={sidebarOpen?'Hide navigation':'Show navigation'}>{sidebarOpen?<ChevronLeft size={15}/>:<ChevronRight size={15}/>}</button><b>{active?.title||'New page'}</b></div><div className="topactions"><button onClick={undoPage} disabled={!undoStack.length} title="Undo page edit"><Undo2 size={17}/></button><button onClick={redoPage} disabled={!redoStack.length} title="Redo page edit"><Redo2 size={17}/></button><span className={'saveState '+(saved?'saved':'saving')} title={saved?'Saved':'Not yet saved'}>{saved?<Check size={18}/>:<X size={18}/>}</span><button onClick={()=>move(-1)}><ChevronLeft size={18}/></button><span>{Math.max(1,notebookCards.findIndex(c=>c.id===active?.id)+1)} / {notebookCards.length}</span><button onClick={()=>move(1)}><ChevronRight size={18}/></button><button title="Shuffle" onClick={()=>{const c=notebookCards[Math.floor(Math.random()*notebookCards.length)];if(c)setData({...data,activeCardId:c.id})}}><Shuffle size={17}/></button></div></div>
         {active ? <CardEditor card={active} patch={patchCard} deleteFlash={deleteFlash} requestedProblemId={openProblemId} clearRequestedProblem={()=>setOpenProblemId(null)}/> : <Empty onAdd={addCard}/>} 
       </main>
     </> : mode==='queue' ? <StudyQueue cards={data.cards} notebooks={data.notebooks} beginStudy={beginStudy} openFlashCard={(card,problem)=>{const owner=data.notebooks.find(n=>n.id===card.notebookId);setData({...data,activeWorkId:owner?.workId??data.activeWorkId,activeNotebookId:card.notebookId,activeCardId:card.id});setOpenProblemId(problem.id);setMode('write')}} activateFlashCard={(card,problem)=>setData(d=>!d?d:{...d,cards:d.cards.map(c=>c.id===card.id?{...c,problems:c.problems.map(p=>p.id===problem.id?{...p,due:new Date().toISOString(),stability:1,difficulty:5,reps:0,lapses:0,reviews:[]}:p)}:c)})}/> : mode==='history' ? <ReviewHistory cards={data.cards} notebooks={data.notebooks}/> : mode==='trash' ? <RecentlyDeleted items={data.trash??[]} restore={item=>restoreTrashItem(item,data,setData)} remove={id=>setData({...data,trash:(data.trash??[]).filter(item=>item.id!==id)})}/> : <StudyView item={currentStudy} index={studyIndex} total={studyIds.length} revealed={revealed} setRevealed={setRevealed} rate={rate} exit={()=>setMode('queue')}/>} 
