@@ -184,23 +184,43 @@ function RichText({text}:{text:string}){
 function renderMath(text:string){
   const escape=(value:string)=>value.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]!));
   const pattern=/(\$\$[\s\S]+?\$\$|\$[^\n$]+?\$)/g;
+  const markdownInline=(value:string)=>{
+    const code:string[]=[];
+    let result=escape(value).replace(/`([^`]+)`/g,(_,content)=>{const token=`\u0000CODE${code.length}\u0000`;code.push(`<code>${content}</code>`);return token});
+    result=result.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|mailto:[^\s)]+)\)/g,'<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+    result=result.replace(/\*\*([^*\n]+)\*\*|__([^_\n]+)__/g,'<strong>$1$2</strong>');
+    result=result.replace(/~~([^~\n]+)~~/g,'<del>$1</del>');
+    result=result.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g,'$1<em>$2</em>');
+    result=result.replace(/(^|[^_])_([^_\n]+)_(?!_)/g,'$1<em>$2</em>');
+    return result.replace(/\u0000CODE(\d+)\u0000/g,(_,index)=>code[Number(index)]);
+  };
   const inline=(value:string)=>value.split(pattern).map(part=>{
     const display=part.startsWith('$$')&&part.endsWith('$$');
     const inline=!display&&part.startsWith('$')&&part.endsWith('$');
-    if(!display&&!inline)return escape(part).replace(/\n/g,'<br>');
+    if(!display&&!inline)return markdownInline(part).replace(/\n/g,'<br>');
     try{return katex.renderToString(part.slice(display?2:1,display?-2:-1),{displayMode:display,throwOnError:false,strict:false,trust:false});}
     catch{return escape(part)}
   }).join('');
   const lines=text.split('\n');
-  let html='';let listType:''|'ul'|'ol'='';
+  let html='';let listType:''|'ul'|'ol'='';let inCode=false;let codeLines:string[]=[];
+  const closeList=()=>{if(listType){html+=`</${listType}>`;listType=''}};
   for(const line of lines){
-    const bullet=line.match(/^\s*[-*]\s+(.*)$/);
+    if(/^\s*```/.test(line)){closeList();if(inCode){html+=`<pre><code>${escape(codeLines.join('\n'))}</code></pre>`;codeLines=[]}inCode=!inCode;continue}
+    if(inCode){codeLines.push(line);continue}
+    const task=line.match(/^\s*[-*]\s+\[([ xX])\]\s+(.*)$/);
+    const bullet=!task&&line.match(/^\s*[-*]\s+(.*)$/);
     const numbered=line.match(/^\s*\d+\.\s+(.*)$/);
-    const type=bullet?'ul':numbered?'ol':'';
-    if(type){if(listType!==type){if(listType)html+=`</${listType}>`;html+=`<${type}>`;listType=type}html+=`<li>${inline((bullet||numbered)![1])}</li>`}
-    else{if(listType){html+=`</${listType}>`;listType=''}html+=line?`<div>${inline(line)}</div>`:'<br>'}
+    const type=task||bullet?'ul':numbered?'ol':'';
+    if(type){if(listType!==type){closeList();html+=`<${type}>`;listType=type}html+=task?`<li class="taskItem"><input type="checkbox" disabled ${task[1].toLowerCase()==='x'?'checked':''}/><span>${inline(task[2])}</span></li>`:`<li>${inline((bullet||numbered)![1])}</li>`;continue}
+    closeList();
+    const heading=line.match(/^(#{1,6})\s+(.*)$/);
+    const quote=line.match(/^>\s?(.*)$/);
+    if(heading)html+=`<h${heading[1].length}>${inline(heading[2])}</h${heading[1].length}>`;
+    else if(quote)html+=`<blockquote>${inline(quote[1])}</blockquote>`;
+    else if(/^\s*((-{3,})|(\*{3,})|(_{3,}))\s*$/.test(line))html+='<hr>';
+    else html+=line?`<div>${inline(line)}</div>`:'<br>';
   }
-  if(listType)html+=`</${listType}>`;
+  closeList();if(inCode)html+=`<pre><code>${escape(codeLines.join('\n'))}</code></pre>`;
   return html;
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "folio-notes",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "description": "Summa Universalis — a page-first notebook and spaced-repetition desktop app",
   "main": "electron/main.cjs",
@@ -36,7 +36,7 @@
     "files": ["dist/**/*", "electron/**/*", "package.json"],
     "directories": { "output": "release" },
     "win": { "target": "nsis" },
-    "publish": [{ "provider": "github", "owner": "rosememerose", "repo": "Summa-Universalis" }],
+    "publish": [{ "provider": "github", "owner": "rosememerose", "repo": "Summa-Universalis", "releaseType": "release" }],
   "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
