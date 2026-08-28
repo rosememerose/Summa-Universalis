@@ -96,7 +96,20 @@ export default function App() {
   const selectWork=(id:string)=>{const first=data.notebooks.find(n=>n.workId===id);const firstCard=data.cards.find(c=>c.notebookId===first?.id);setData({...data,activeWorkId:id,activeNotebookId:first?.id??'',activeCardId:firstCard?.id??''});setTagFilter('')};
   const beginRenameNotebook=(id:string)=>{const current=data.notebooks.find(n=>n.id===id);if(!current)return;setRenameDialog({kind:'workbook',id,title:current.title});setNotebookMenu(null)};
   const beginRenameWork=(work:Work)=>setRenameDialog({kind:'work',id:work.id,title:work.title});
-  const saveEntityName=()=>{if(!renameDialog)return;const title=renameDialog.title.trim();if(title)setData(d=>!d?d:renameDialog.kind==='work'?{...d,works:d.works.map(w=>w.id===renameDialog.id?{...w,title}:w)}:{...d,notebooks:d.notebooks.map(n=>n.id===renameDialog.id?{...n,title}:n)});setRenameDialog(null)};
+  const saveEntityName=async()=>{
+    if(!renameDialog)return;
+    const title=renameDialog.title.trim();
+    if(!title)return;
+    const next:AppData=renameDialog.kind==='work'
+      ?{...data,works:data.works.map(w=>w.id===renameDialog.id?{...w,title}:w)}
+      :{...data,notebooks:data.notebooks.map(n=>n.id===renameDialog.id?{...n,title}:n)};
+    setData(next);
+    setRenameDialog(null);
+    window.clearTimeout(saveTimer.current);
+    setSaved(false);
+    if(window.folio)await window.folio.save(next);else localStorage.setItem('folio-data',JSON.stringify(next));
+    setSaved(true);
+  };
   const moveWorkbook=(notebookId:string,workId:string)=>{setData(d=>!d?d:{...d,notebooks:d.notebooks.map(n=>n.id===notebookId?{...n,workId}:n),activeWorkId:workId});setNotebookMenu(null)};
   const deleteWork=(id:string)=>{const work=data.works.find(w=>w.id===id);if(!work)return;const workbooks=data.notebooks.filter(n=>n.workId===id);if(!window.confirm(`Move work “${work.title}” and its ${workbooks.length} ${workbooks.length===1?'workbook':'workbooks'} to Deleted?`))return;const item:TrashItem={id:uid(),kind:'work',deletedAt:new Date().toISOString(),work,workbooks:workbooks.map(notebook=>({notebook,pages:data.cards.filter(c=>c.notebookId===notebook.id)}))};const workbookIds=new Set(workbooks.map(n=>n.id));const works=data.works.filter(w=>w.id!==id);const notebooks=data.notebooks.filter(n=>!workbookIds.has(n.id));const cards=data.cards.filter(c=>!workbookIds.has(c.notebookId));const nextWork=works[0];const nextWorkbook=notebooks.find(n=>n.workId===nextWork?.id);setData({...data,works,notebooks,cards,trash:[...(data.trash??[]),item],activeWorkId:data.activeWorkId===id?(nextWork?.id??''):data.activeWorkId,activeNotebookId:data.activeWorkId===id?(nextWorkbook?.id??''):data.activeNotebookId,activeCardId:data.activeWorkId===id?(cards.find(c=>c.notebookId===nextWorkbook?.id)?.id??''):data.activeCardId});setWorkMenu(null)};
   const deleteNotebook=(id:string)=>{const target=data.notebooks.find(n=>n.id===id);if(!target)return;const removed=data.cards.filter(c=>c.notebookId===id);const pageCount=removed.length;if(!window.confirm(`Move workbook “${target.title}” and its ${pageCount} ${pageCount===1?'page':'pages'} to Deleted?`))return;const trashItem:TrashItem={id:uid(),kind:'notebook',deletedAt:new Date().toISOString(),notebook:target,pages:removed};const notebooks=data.notebooks.filter(n=>n.id!==id);const cards=data.cards.filter(c=>c.notebookId!==id);const next=notebooks.find(n=>n.workId===target.workId);setData({...data,notebooks,cards,trash:[...(data.trash??[]),trashItem],activeNotebookId:data.activeNotebookId===id?(next?.id??''):data.activeNotebookId,activeCardId:data.activeNotebookId===id?(cards.find(c=>c.notebookId===next?.id)?.id??''):data.activeCardId});setNotebookMenu(null)};
