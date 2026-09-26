@@ -1,6 +1,6 @@
 export type Rating = 1 | 2 | 3 | 4;
 export type Review = { at: string; rating: Rating; stability: number; difficulty: number; scheduledDays: number };
-export type FlashVariant = { id:string; prompt:string; solution:string; images?:string[] };
+export type FlashVariant = { id:string; prompt:string; solution:string; images?:string[]; frontImages?:string[]; backImages?:string[] };
 export type Problem = {
   id: string; title?: string; prompt: string; solution: string; due?: string; stability?: number; difficulty?: number;
   reps?: number; lapses?: number; reviews?: Review[]; source?:string; variants?:FlashVariant[]; usedVariantIds?:string[]; currentVariantId?:string;
