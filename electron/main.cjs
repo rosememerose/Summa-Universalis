@@ -36,6 +36,33 @@ app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
   ipcMain.handle('folio:load', readData);
   ipcMain.handle('folio:save', (_event, data) => writeData(data));
+  ipcMain.handle('folio:export-pdf', async (event, { html, defaultName }) => {
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const saveOptions = {
+      title: 'Export flashcard deck as PDF',
+      defaultPath: defaultName,
+      filters: [{ name: 'PDF document', extensions: ['pdf'] }]
+    };
+    const result = owner ? await dialog.showSaveDialog(owner, saveOptions) : await dialog.showSaveDialog(saveOptions);
+    if (result.canceled || !result.filePath) return { canceled: true };
+    const tempFile = path.join(app.getPath('temp'), `summa-universalis-export-${Date.now()}.html`);
+    const exportWindow = new BrowserWindow({ show: false, webPreferences: { sandbox: true } });
+    try {
+      fs.writeFileSync(tempFile, html, 'utf8');
+      await exportWindow.loadFile(tempFile);
+      await exportWindow.webContents.executeJavaScript('document.fonts.ready');
+      const pdf = await exportWindow.webContents.printToPDF({
+        printBackground: true,
+        pageSize: 'A4',
+        margins: { top: 0.4, bottom: 0.45, left: 0.45, right: 0.45 }
+      });
+      fs.writeFileSync(result.filePath, pdf);
+      return { canceled: false, filePath: result.filePath };
+    } finally {
+      if (!exportWindow.isDestroyed()) exportWindow.destroy();
+      try { fs.unlinkSync(tempFile); } catch {}
+    }
+  });
   createWindow();
   if (app.isPackaged) {
     autoUpdater.autoDownload = true;
