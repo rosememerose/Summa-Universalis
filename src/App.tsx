@@ -14,7 +14,7 @@ const problemVariants=(problem:Problem):FlashVariant[]=>(problem.variants?.lengt
 const imageToken=(id:string)=>`[[image:${id}]]`;
 const imageIds=(text:string)=>Array.from(text.matchAll(/\[\[image:([^\]]+)\]\]/g),match=>match[1]);
 const textWithoutImages=(text:string)=>text.replace(/\s*\[\[image:[^\]]+\]\]\s*/g,'\n').replace(/\n{3,}/g,'\n\n').trim();
-const normalizeBracketMath=(text:string)=>text.replace(/\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)/g,block=>block.replace(/(?<!\\)\$/g,''));
+const normalizeBracketMath=(text:string)=>text.replace(/\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)/g,block=>block.replace(/(^|[^\\])((?:\\\\)*)\$/g,'$1$2'));
 const serializeSide=(text:string,images:string[],library:Record<string,string>)=>{const ids=images.map(src=>Object.keys(library).find(id=>library[id]===src)).filter((id):id is string=>Boolean(id));return [text,...ids.map(imageToken)].filter(Boolean).join('\n\n')};
 const serializeVariants=(variants:FlashVariant[],library:Record<string,string>={})=>variants.flatMap(v=>[serializeSide(v.prompt,v.frontImages??v.images??[],library),serializeSide(v.solution,v.backImages??[],library)]).join('\n\n@\n\n');
 const parseVariants=(source:string,previous:FlashVariant[]=[],library:Record<string,string>={}):FlashVariant[]=>{
