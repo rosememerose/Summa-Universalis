@@ -4,7 +4,7 @@ export type FlashVariant = { id:string; prompt:string; solution:string; images?:
 export type Problem = {
   id: string; title?: string; prompt: string; solution: string; due?: string; stability?: number; difficulty?: number;
   reps?: number; lapses?: number; reviews?: Review[]; source?:string; variants?:FlashVariant[]; usedVariantIds?:string[]; currentVariantId?:string;
-  tags?:string[]; exhausted?:boolean; imageLibrary?:Record<string,string>;
+  tags?:string[]; exhausted?:boolean; starred?:boolean; imageLibrary?:Record<string,string>;
 };
 export type Card = {
   id: string; notebookId: string; title: string; core: string; notes: string; problems: Problem[];
