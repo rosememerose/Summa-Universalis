@@ -26,6 +26,9 @@ importers:
       react-dom:
         specifier: latest
         version: 19.2.8(react@19.2.8)
+      ts-fsrs:
+        specifier: 5.4.2
+        version: 5.4.2
       typescript:
         specifier: latest
         version: 7.0.2
@@ -1505,6 +1508,9 @@ packages:
   type-fest@0.13.1:
     resolution: {integrity: sha512-34R7HTnG0XIJcBSn5XhDd7nNFPRcXYRZrBB2O2jdKqYODldSzBAqzsWoZYYvduky73toYS/ESqxPvkDf/F0XMg==}
     engines: {node: '>=10'}
+
+  ts-fsrs@5.4.2:
+    resolution: {integrity: sha512-z4qop4pzTcyTzuJ566d9EaX/4bZZzhYfeaPImfVr+xcYT65c5oBgFDijUhCE/D+C78eaolHIhKRZ04/RwF+v2g==}
 
   typescript@7.0.2:
     resolution: {integrity: sha512-8FYau96o3NKOhbjKi/qNvG/W5jhzxkbdm5sj9AbZ/5T5sWqn3hJgLfGx27sRKZWTvyzCP8dLRBTf5tBTSRVUNA==}
@@ -3130,6 +3136,8 @@ snapshots:
 
   type-fest@0.13.1:
     optional: true
+
+  ts-fsrs@5.4.2: {}
 
   typescript@7.0.2:
     optionalDependencies:

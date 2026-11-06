@@ -1,40 +1,61 @@
-import type { Card, Problem, Rating } from './types';
+import { Rating as FsrsRating, State, createEmptyCard, fsrs, type Card as FsrsCard, type CardInput } from 'ts-fsrs';
+import type { Problem, Rating, Review } from './types';
 
-const factors: Record<Rating, number> = { 1: 0.22, 2: 0.62, 3: 1, 4: 1.55 };
-export function reviewCard(card: Card, rating: Rating, now = new Date()): Card {
-  const elapsed = card.reviews.length ? Math.max(0, (now.getTime() - new Date(card.reviews.at(-1)!.at).getTime()) / 86400000) : 0;
-  const retrievability = Math.pow(1 + elapsed / (9 * Math.max(card.stability, 0.1)), -1);
-  const difficulty = Math.min(10, Math.max(1, card.difficulty + (rating === 1 ? 0.9 : rating === 2 ? 0.3 : rating === 4 ? -0.35 : -0.08)));
-  let stability: number;
-  if (rating === 1) stability = Math.max(0.25, card.stability * 0.28);
-  else {
-    const growth = 1 + (11 - difficulty) * 0.16 * (1 - retrievability + 0.12) * factors[rating];
-    stability = Math.max(0.5, card.stability * growth + (card.reps === 0 ? factors[rating] * 1.8 : 0));
-  }
-  const scheduledDays = rating === 1 ? 1 : Math.max(1, Math.round(stability * (rating === 2 ? 0.7 : rating === 4 ? 1.35 : 1)));
-  const due = new Date(now.getTime() + scheduledDays * 86400000).toISOString();
-  return { ...card, difficulty, stability, due, reps: card.reps + 1, lapses: card.lapses + (rating === 1 ? 1 : 0),
-    reviews: [...card.reviews, { at: now.toISOString(), rating, stability, difficulty, scheduledDays }] };
+export const FSRS_VERSION = 6 as const;
+// ts-fsrs 5.4.2 implements FSRS-6. Empty options use its official defaults.
+const scheduler = fsrs();
+const toFsrsRating = (rating: Rating): Exclude<FsrsRating, FsrsRating.Manual> => rating as Exclude<FsrsRating, FsrsRating.Manual>;
+const validDate = (value: string | undefined, fallback = new Date()): Date => {
+  const date = value ? new Date(value) : fallback;
+  return Number.isNaN(date.getTime()) ? fallback : date;
+};
+
+function storedCard(problem: Problem, now: Date): CardInput {
+  const latestReview = problem.reviews?.at(-1);
+  const reviewed = (problem.reps ?? 0) > 0 || Boolean(latestReview);
+  return {
+    due: validDate(problem.due, now),
+    stability: reviewed ? Math.max(0, problem.stability ?? 0) : 0,
+    difficulty: reviewed ? Math.max(0, problem.difficulty ?? 0) : 0,
+    elapsed_days: problem.elapsedDays ?? 0,
+    scheduled_days: problem.scheduledDays ?? latestReview?.scheduledDays ?? 0,
+    learning_steps: problem.learningSteps ?? 0,
+    reps: problem.reps ?? 0,
+    lapses: problem.lapses ?? 0,
+    state: problem.fsrsState ?? (reviewed ? State.Review : State.New),
+    last_review: problem.lastReview ? validDate(problem.lastReview) : latestReview ? validDate(latestReview.at) : undefined,
+  };
 }
-export const isDue = (card: Card, now = new Date()) => new Date(card.due) <= now;
+
+function applyCard(problem: Problem, card: FsrsCard): Problem {
+  return { ...problem, due: card.due.toISOString(), stability: card.stability, difficulty: card.difficulty,
+    elapsedDays: card.elapsed_days, scheduledDays: card.scheduled_days, learningSteps: card.learning_steps,
+    reps: card.reps, lapses: card.lapses, fsrsState: card.state, lastReview: card.last_review?.toISOString(), fsrsVersion: FSRS_VERSION };
+}
 
 export function reviewProblem(problem: Problem, rating: Rating, now = new Date()): Problem {
-  const reviews = problem.reviews ?? [];
-  const stabilityNow = problem.stability ?? 1;
-  const difficultyNow = problem.difficulty ?? 5;
-  const reps = problem.reps ?? 0;
-  const elapsed = reviews.length ? Math.max(0, (now.getTime() - new Date(reviews.at(-1)!.at).getTime()) / 86400000) : 0;
-  const retrievability = Math.pow(1 + elapsed / (9 * Math.max(stabilityNow, 0.1)), -1);
-  const difficulty = Math.min(10, Math.max(1, difficultyNow + (rating === 1 ? 0.9 : rating === 2 ? 0.3 : rating === 4 ? -0.35 : -0.08)));
-  let stability: number;
-  if (rating === 1) stability = Math.max(0.25, stabilityNow * 0.28);
-  else {
-    const growth = 1 + (11 - difficulty) * 0.16 * (1 - retrievability + 0.12) * factors[rating];
-    stability = Math.max(0.5, stabilityNow * growth + (reps === 0 ? factors[rating] * 1.8 : 0));
-  }
-  const scheduledDays = rating === 1 ? 1 : Math.max(1, Math.round(stability * (rating === 2 ? 0.7 : rating === 4 ? 1.35 : 1)));
-  return { ...problem, stability, difficulty, due: new Date(now.getTime() + scheduledDays * 86400000).toISOString(), reps: reps + 1,
-    lapses: (problem.lapses ?? 0) + (rating === 1 ? 1 : 0), reviews: [...reviews, { at: now.toISOString(), rating, stability, difficulty, scheduledDays }] };
+  const result = scheduler.next(storedCard(problem, now), now, toFsrsRating(rating));
+  const review: Review = { at: result.log.review.toISOString(), rating, stability: result.card.stability,
+    difficulty: result.card.difficulty, scheduledDays: result.log.scheduled_days, elapsedDays: result.log.elapsed_days,
+    lastElapsedDays: result.log.last_elapsed_days, learningSteps: result.log.learning_steps, state: result.log.state,
+    due: result.card.due.toISOString(), fsrsVersion: FSRS_VERSION };
+  return { ...applyCard(problem, result.card), reviews: [...(problem.reviews ?? []), review] };
 }
 
-export const isProblemDue = (problem: Problem, now = new Date()) => !problem.due || new Date(problem.due) <= now;
+/** Replay legacy ratings so existing progress becomes a genuine FSRS-6 state. */
+export function migrateProblemToFsrs6(problem: Problem, now = new Date()): Problem {
+  if (problem.fsrsVersion === FSRS_VERSION) return problem;
+  const history = [...(problem.reviews ?? [])]
+    .filter(review => review.rating >= 1 && review.rating <= 4 && !Number.isNaN(new Date(review.at).getTime()))
+    .sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
+  if (!history.length) return applyCard(problem, createEmptyCard(validDate(problem.due, now)));
+  let card: FsrsCard = createEmptyCard(validDate(history[0].at, now));
+  for (const review of history) card = scheduler.next(card, validDate(review.at, now), toFsrsRating(review.rating)).card;
+  return applyCard(problem, card);
+}
+
+export function resetProblemFsrs6(problem: Problem, now = new Date()): Problem {
+  return { ...applyCard(problem, createEmptyCard(now)), reviews: [], usedVariantIds: [], currentVariantId: undefined };
+}
+
+export const isProblemDue = (problem: Problem, now = new Date()) => !problem.due || validDate(problem.due, now) <= now;
